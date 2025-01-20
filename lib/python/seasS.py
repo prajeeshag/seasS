@@ -88,7 +88,7 @@ def get_fcst_file_path(year, month, lstart, lend, model, root_path):
 
 
 def get_mme_freq_path(year: int, month: int, lstart: int, lend: int, data_root: str):
-    return f"{data_root}/MME/frequencies/{year}/{month:02d}/L-{lstart}.5-{lend}.5/MME-{month:02d}-L-{lstart}.5-{lend}.5_frequencies.nc"
+    return f"{data_root}/MME/frequencies/{year}/{month:02d}/L-{lstart}.5-{lend}.5/MME-L-{lstart}.5-{lend}.5_frequencies.nc"
 
 
 @app.command()

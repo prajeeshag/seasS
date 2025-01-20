@@ -4,11 +4,16 @@
 {% set CONDA_PREFIX_PATH="/home/athippp/micromamba/seasS" %}
 {% set CONDA_CMD="micromamba" %}
 {% set DATA_ROOT="/home/athippp/DATA/seasS" %}
+{% set VIZ_SERVER_PATH="KW61469:/home/pammirp/data/live/ncm/seasonal/" %}
 
 [task parameters]
 
 [scheduling]
     initial cycle point = 2024-12-02T00:00:00
+    [[queues]]
+        [[[get_fcst_queue]]]
+            limit=2
+            members = GET_FCST
 
     [[graph]]
         R1 = """
@@ -46,7 +51,10 @@
     [[notify]]
         script = "echo done"
         [[[events]]] 
-            mail events = succeed
+            mail events = succeeded
+
+    [[GET_FCST]]
+        execution retry delays = 10*P1D
 
 {% for lstart in range(1, 5) %}
 {% for lend in range(2 + lstart, 7) %}
@@ -54,7 +62,7 @@
         script = """
             $PYTHON -c 'import seasS; seasS.app()' get-fcst-data ${year} ${month} {{lstart}} {{lend}} {{DATA_ROOT}}
         """
-        execution retry delays = 10*P1D 
+        inherit = GET_FCST
     
     [[process_freq_L{{lstart}}_{{lend}}]] 
         script = """
@@ -63,10 +71,9 @@
     
     [[push_data_L{{lstart}}_{{lend}}]] 
         script = """
-            #viz_server_path="kw61469:/home/pammirp/data/live/ncm/drought/"
-            #rsync -r -P $OUTDIR/* $viz_server_path
             data_path=$($PYTHON -c 'import seasS; seasS.app()' mme-freq-path ${year} ${month} {{lstart}} {{lend}} {{DATA_ROOT}})
-            echo "push $data_path"
+            echo push $data_path to {{VIZ_SERVER_PATH}}
+            rsync -P $data_path {{VIZ_SERVER_PATH}}
         """
 {% endfor %}
 {% endfor %}
