@@ -9,7 +9,7 @@
 [task parameters]
 
 [scheduling]
-    initial cycle point = 2024-12-02T00:00:00
+    initial cycle point = 2025-01-02T00:00:00
     [[queues]]
         [[[get_fcst_queue]]]
             limit=2
@@ -30,6 +30,7 @@
 
 [runtime]
     [[root]]
+        execution retry delays = 2*PT2M
         [[[mail]]]
             to = {{ ADMIN_EMAILS }}
         [[[events]]]
@@ -43,13 +44,17 @@
 
 
 
+
     [[install_pkgs]]
         script = """
             {{CONDA_CMD}} create -f $ETC_DIR/env.yaml -p {{CONDA_PREFIX_PATH}} -y
         """
 
     [[notify]]
-        script = "echo done"
+        script = """
+            create_param_json.sh
+            rsync -P param.json {{VIZ_SERVER_PATH}}
+        """
         [[[events]]] 
             mail events = succeeded
 
