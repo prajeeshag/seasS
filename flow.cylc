@@ -1,0 +1,73 @@
+#!Jinja2
+
+{% set ADMIN_EMAILS="prajeesh.athippattagopinathan@kaust.edu.sa" %}
+{% set CONDA_PREFIX_PATH="/home/athippp/micromamba/seasS" %}
+{% set CONDA_CMD="micromamba" %}
+{% set DATA_ROOT="/home/athippp/DATA/seasS" %}
+
+[task parameters]
+
+[scheduling]
+    initial cycle point = 2024-12-02T00:00:00
+
+    [[graph]]
+        R1 = """
+            install_pkgs
+        """
+
+        P1M = """
+            {% for lstart in range(1, 5) %}
+            {% for lend in range(2 + lstart, 7) %}
+            @wall_clock & install_pkgs[^] => get_fcst_L{{lstart}}_{{lend}} => process_freq_L{{lstart}}_{{lend}} => push_data_L{{lstart}}_{{lend}} => notify
+            {% endfor %}
+            {% endfor %}
+        """
+
+[runtime]
+    [[root]]
+        [[[mail]]]
+            to = {{ ADMIN_EMAILS }}
+        [[[events]]]
+            mail events = failed
+        [[[environment]]]
+            ETC_DIR=${CYLC_WORKFLOW_RUN_DIR}/etc
+            PYTHON={{CONDA_PREFIX_PATH}}/bin/python
+
+            year=${CYLC_TASK_CYCLE_POINT:0:4}
+            month=${CYLC_TASK_CYCLE_POINT:4:2}
+
+
+
+    [[install_pkgs]]
+        script = """
+            {{CONDA_CMD}} create -f $ETC_DIR/env.yaml -p {{CONDA_PREFIX_PATH}} -y
+        """
+
+    [[notify]]
+        script = "echo done"
+        [[[events]]] 
+            mail events = succeed
+
+{% for lstart in range(1, 5) %}
+{% for lend in range(2 + lstart, 7) %}
+    [[get_fcst_L{{lstart}}_{{lend}}]]
+        script = """
+            $PYTHON -c 'import seasS; seasS.app()' get-fcst-data ${year} ${month} {{lstart}} {{lend}} {{DATA_ROOT}}
+        """
+        execution retry delays = 10*P1D 
+    
+    [[process_freq_L{{lstart}}_{{lend}}]] 
+        script = """
+            $PYTHON -c 'import seasS; seasS.app()' process-mme-freq ${year} ${month} {{lstart}} {{lend}} {{DATA_ROOT}}
+        """ 
+    
+    [[push_data_L{{lstart}}_{{lend}}]] 
+        script = """
+            #viz_server_path="kw61469:/home/pammirp/data/live/ncm/drought/"
+            #rsync -r -P $OUTDIR/* $viz_server_path
+            data_path=$($PYTHON -c 'import seasS; seasS.app()' mme-freq-path ${year} ${month} {{lstart}} {{lend}} {{DATA_ROOT}})
+            echo "push $data_path"
+        """
+{% endfor %}
+{% endfor %}
+
