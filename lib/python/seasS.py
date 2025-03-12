@@ -1,11 +1,14 @@
 import calendar
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
 import requests
 import typer
 import xarray as xr
+from dateutil.relativedelta import relativedelta
 
 app = typer.Typer()
 
@@ -60,7 +63,7 @@ def compute_frequencies(data_file, hist_pctl_data, fldname):
     hist_ds = xr.open_dataset(hist_pctl_data)
     var = ds[fldname].squeeze()
     if len(var.shape) > 3 or len(var.shape) < 2:
-        raise SystemError(f"var.shapre {var.shape}")
+        raise SystemError(f"var.shape {var.shape}")
     ne = 1
     if len(var.shape) == 3:
         ne = var.shape[0]
@@ -89,57 +92,84 @@ def get_fcst_file_path(year, month, lstart, lend, model, root_path, fldname):
     return data_file
 
 
-def get_mme_freq_path(
-    year: int, month: int, lstart: int, lend: int, data_root: str, fldname: str
-):
-    return f"{data_root}/{fldname}/MME/frequencies/{year}/{month:02d}/L-{lstart}.5-{lend}.5/MME_{fldname}-L-{lstart}.5-{lend}.5_frequencies.nc"
+def get_mme_freq_path(acc: int, data_root: str, fldname: str):
+    return f"{data_root}/{fldname}/{acc}monthly/{fldname}-{acc}monthly-frequencies.nc"
 
 
 @app.command()
-def get_fcst_data(
-    year: int, month: int, lstart: int, lend: int, data_root: str, fldname: str
-):
+def get_fcst_data(year: int, month: int, acc: int, data_root: str, fldname: str):
     mon_abbr = calendar.month_abbr[month]
     for model in MODELS:
-        url = get_url(model, year, mon_abbr, lstart, lend, fldname)
-        data_file = get_fcst_file_path(
-            year, month, lstart, lend, model, data_root, fldname
-        )
-        print(f"downloading {data_file}")
-        download_data(url, data_file)
+        for lstart in range(1, 8 - acc):
+            lend = lstart + acc - 1
+            url = get_url(model, year, mon_abbr, lstart, lend, fldname)
+            data_file = get_fcst_file_path(
+                year, month, lstart, lend, model, data_root, fldname
+            )
+            print(f"downloading {data_file}")
+            download_data(url, data_file)
 
 
 @app.command()
 def process_mme_freq(
-    year: int, month: int, lstart: int, lend: int, data_root: str, fldname: str
+    year: int,
+    month: int,
+    acc: int,
+    data_root: str,
+    fldname: str,
 ):
-    for n, model in enumerate(MODELS):
-        data_file = get_fcst_file_path(
-            year, month, lstart, lend, model, data_root, fldname
-        )
-        hist_pctl_data = get_hist_pctl_path(
-            model, month, lstart, lend, data_root, fldname
-        )
-        if n == 0:
-            ne, fr = compute_frequencies(data_file, hist_pctl_data, fldname)
-        else:
-            nne, ffr = compute_frequencies(data_file, hist_pctl_data, fldname)
-            ne += nne
-            for i in range(len(fr)):
-                fr[i].values += ffr[i].values
-    for i in range(len(fr)):
-        fr[i].values = fr[i].values / float(ne)
-    dataset = xr.Dataset({da.name: da for da in fr})
-    output = get_mme_freq_path(year, month, lstart, lend, data_root, fldname)
+    datasets = []
+    for lstart in range(1, 8 - acc):
+        lend = lstart + acc - 1
+        for n, model in enumerate(MODELS):
+            data_file = get_fcst_file_path(
+                year, month, lstart, lend, model, data_root, fldname
+            )
+            hist_pctl_data = get_hist_pctl_path(
+                model, month, lstart, lend, data_root, fldname
+            )
+            if n == 0:
+                ne, fr = compute_frequencies(data_file, hist_pctl_data, fldname)
+            else:
+                nne, ffr = compute_frequencies(data_file, hist_pctl_data, fldname)
+                ne += nne
+                for i in range(len(fr)):
+                    fr[i].values += ffr[i].values
+        for i in range(len(fr)):
+            fr[i].values = fr[i].values / float(ne)
+
+        tstart = add_months(year, month, lstart)
+        tend = add_months(year, month, lend)
+        dataset = xr.Dataset({da.name: da for da in fr})
+        dataset = dataset.drop_vars(["S"])
+        dataset["tstart"] = (("S"), [tstart])
+        dataset["tend"] = (("S"), [tend])
+        datasets.append(dataset)
+
+    dataset = xr.concat(datasets, dim="S")
+    dataset = dataset.rename({"S": "time"})
+    ntime = len(datasets)
+    ym = str(dataset["tstart"][0].values)
+    dates = pd.date_range(start=f"{ym[0:4]}-{ym[4:6]}-01", periods=ntime, freq="MS")
+    ref_time = pd.Timestamp("1960-01-01")
+    time_units = (dates - ref_time).days
+    dataset.coords["time"] = ("time", time_units)
+    dataset.coords["time"].attrs["units"] = "days since 1960-01-01"
+    dataset.coords["time"].attrs["calendar"] = "gregorian"
+    data_root1 = f"{data_root}/mme/freq/{year}/{month:02d}"
+    output = get_mme_freq_path(acc, data_root1, fldname)
     Path(output).parent.mkdir(parents=True, exist_ok=True)
-    dataset.to_netcdf(output)
+    dataset.to_netcdf(output, unlimited_dims=["time"])
+
+
+def add_months(year: int, month: int, months_to_add: int) -> int:
+    new_date = datetime(year, month, 1) + relativedelta(months=months_to_add)
+    return new_date.year * 100 + new_date.month
 
 
 @app.command()
-def mme_freq_path(
-    year: int, month: int, lstart: int, lend: int, data_root: str, fldname: str
-):
-    print(get_mme_freq_path(year, month, lstart, lend, data_root, fldname))
+def mme_freq_path(acc: int, data_root: str, fldname: str):
+    print(get_mme_freq_path(acc, data_root, fldname))
 
 
 if __name__ == "__main__":

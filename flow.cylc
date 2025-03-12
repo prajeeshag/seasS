@@ -8,6 +8,7 @@
 
 [task parameters]
     fld = tref, prec
+    amon = 3..6
 
 [scheduling]
     initial cycle point = 2025-01-02T00:00:00
@@ -22,11 +23,7 @@
         """
 
         P1M = """
-            {% for lstart in range(1, 5) %}
-            {% for lend in range(2 + lstart, 7) %}
-                @wall_clock & install_pkgs[^] => get_fcst<fld>_L{{lstart}}_{{lend}} => process_freq<fld>_L{{lstart}}_{{lend}} => push_data<fld>_L{{lstart}}_{{lend}} => notify
-            {% endfor %}
-            {% endfor %}
+            @wall_clock & install_pkgs[^] => get_fcst<fld><amon> => process_freq<fld><amon> => create_param => push_data
         """
 
 [runtime]
@@ -50,14 +47,12 @@
         script = """
             {{CONDA_CMD}} create -f $ETC_DIR/env.yaml -p {{CONDA_PREFIX_PATH}} -y
         """
-
-    [[notify]]
+    [[create_param]]
         script = """
             create_param_json.sh
             rsync -P param.json {{VIZ_SERVER_PATH}}
         """
-        [[[events]]] 
-            mail events = succeeded
+
 
     [[GET_FCST]]
         execution retry delays = 10*P1D
@@ -66,28 +61,24 @@
 
     [[PUSH_DATA]]
 
-{% for lstart in range(1, 5) %}
-{% for lend in range(2 + lstart, 7) %}
-    [[get_fcst<fld>_L{{lstart}}_{{lend}}]]
+    [[get_fcst<fld><amon>]]
         script = """
-            $PYTHON -c 'import seasS; seasS.app()' get-fcst-data ${year} ${month} {{lstart}} {{lend}} {{DATA_ROOT}} $CYLC_TASK_PARAM_fld
+            $PYTHON -c 'import seasS; seasS.app()' get-fcst-data ${year} ${month} ${CYLC_TASK_PARAM_amon} {{DATA_ROOT}} $CYLC_TASK_PARAM_fld
         """
         inherit = GET_FCST
     
-    [[process_freq<fld>_L{{lstart}}_{{lend}}]] 
+    [[process_freq<fld><amon>]] 
         script = """
-            $PYTHON -c 'import seasS; seasS.app()' process-mme-freq ${year} ${month} {{lstart}} {{lend}} {{DATA_ROOT}} $CYLC_TASK_PARAM_fld
+            $PYTHON -c 'import seasS; seasS.app()' process-mme-freq ${year} ${month} ${CYLC_TASK_PARAM_amon} {{DATA_ROOT}} $CYLC_TASK_PARAM_fld
         """ 
         inherit = PROCESS_FREQ
     
-    [[push_data<fld>_L{{lstart}}_{{lend}}]] 
+    [[push_data]] 
         script = """
-            data_path=$($PYTHON -c 'import seasS; seasS.app()' mme-freq-path ${year} ${month} {{lstart}} {{lend}} {{DATA_ROOT}} $CYLC_TASK_PARAM_fld)
-            echo push $data_path to {{VIZ_SERVER_PATH}}
-            rsync -P $data_path {{VIZ_SERVER_PATH}}
+            cd {{DATA_ROOT}}/mme/freq/${year}/${month}
+            echo push data to {{VIZ_SERVER_PATH}}
+            rsync -P * {{VIZ_SERVER_PATH}}
         """
         inherit = PUSH_DATA
-
-{% endfor %}
-{% endfor %}
-
+        [[[events]]] 
+            mail events = succeeded
