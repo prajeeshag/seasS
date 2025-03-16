@@ -4,6 +4,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import requests
 import typer
@@ -68,6 +69,8 @@ def compute_frequencies(data_file, hist_pctl_data, fldname):
     if len(var.shape) == 3:
         ne = var.shape[0]
     res = []
+    f33 = None
+    f66 = None
     for p in PERCENTILES:
         pname = f"p{p}"
         fname = f"f{p}"
@@ -80,8 +83,32 @@ def compute_frequencies(data_file, hist_pctl_data, fldname):
 
         fvar = fvar.sum(dim="M")
         fvar.name = fname
+        if fname == "f33":
+            f33 = fvar
+        if fname == "f66":
+            f66 = fvar
         res.append(fvar)
+
+    fvar = f33.copy(deep=True)
+    fvar.values = fix_vectors(f33.values, f66.values)
+    fvar.name = "tercile_probability"
+    res.append(fvar)
+
     return ne, res
+
+
+def fix_vectors(
+    f33: np.ndarray,
+    f66: np.ndarray,
+) -> np.ndarray:
+    fnorm = 1.0 - f66 - f33
+    stacked = np.stack([f33, fnorm, f66], axis=0)
+    max_indices = np.argmax(stacked, axis=0)
+    result = np.empty_like(f33, dtype=float)
+    result[max_indices == 0] = -f33[max_indices == 0]
+    result[max_indices == 1] = np.nan
+    result[max_indices == 2] = f66[max_indices == 2]
+    return result
 
 
 def get_fcst_file_path(year, month, lstart, lend, model, root_path, fldname):
@@ -147,7 +174,7 @@ def process_mme_freq(
         datasets.append(dataset)
 
     dataset = xr.concat(datasets, dim="S")
-    dataset = dataset.rename({"S": "time"})
+    dataset = dataset.rename({"S": "time", "X": "lon", "Y": "lat"})
     ntime = len(datasets)
     ym = str(dataset["tstart"][0].values)
     dates = pd.date_range(start=f"{ym[0:4]}-{ym[4:6]}-01", periods=ntime, freq="MS")

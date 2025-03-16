@@ -11,7 +11,7 @@
     amon = 3..6
 
 [scheduling]
-    initial cycle point = 2025-01-02T00:00:00
+    initial cycle point = 2025-03-02T00:00:00
     [[queues]]
         [[[get_fcst_queue]]]
             limit=2
@@ -49,8 +49,8 @@
         """
     [[create_param]]
         script = """
+            cd {{DATA_ROOT}}/mme/freq/${year}/${month}
             create_param_json.sh
-            rsync -P param.json {{VIZ_SERVER_PATH}}
         """
 
 
@@ -77,7 +77,7 @@
         script = """
             cd {{DATA_ROOT}}/mme/freq/${year}/${month}
             echo push data to {{VIZ_SERVER_PATH}}
-            rsync -P * {{VIZ_SERVER_PATH}}
+            rsync -a -P * {{VIZ_SERVER_PATH}}
         """
         inherit = PUSH_DATA
         [[[events]]] 
