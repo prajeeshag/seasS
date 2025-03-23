@@ -21,7 +21,7 @@ MODELS = [
     "NASA-GEOSS2S",
 ]
 
-PERCENTILES = [10, 33, 66, 90]
+PERCENTILES = [33, 66]
 
 
 def get_url(model: str, year: int, mon_abbr: str, lstart: int, lend: int, fldname: str):
@@ -87,7 +87,7 @@ def compute_frequencies(data_file, hist_pctl_data, fldname):
             f33 = fvar
         if fname == "f66":
             f66 = fvar
-        res.append(fvar)
+        # res.append(fvar)
 
     fvar = f33.copy(deep=True)
     fvar.values = fix_vectors(f33.values, f66.values)
@@ -120,7 +120,7 @@ def get_fcst_file_path(year, month, lstart, lend, model, root_path, fldname):
 
 
 def get_mme_freq_path(acc: int, data_root: str, fldname: str):
-    return f"{data_root}/{fldname}/{acc}monthly/{fldname}-{acc}monthly-frequencies.nc"
+    return f"{data_root}/{fldname}/live/{fldname}-{acc}monthly-frequencies.nc"
 
 
 @app.command()
