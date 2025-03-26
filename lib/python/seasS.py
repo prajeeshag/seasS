@@ -1,25 +1,29 @@
 import calendar
 import os
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
+import cdsapi
 import numpy as np
 import pandas as pd
 import requests
 import typer
 import xarray as xr
+from cdo import Cdo
 from dateutil.relativedelta import relativedelta
 
 app = typer.Typer()
 
-MODELS = [
+NMME_MODELS = [
     "CanSIPS-IC4",
     "COLA-RSMAS-CESM1",
     "GFDL-SPEAR",
     "NCEP-CFSv2",
     "NASA-GEOSS2S",
 ]
+
 
 PERCENTILES = [33, 66]
 
@@ -126,7 +130,7 @@ def get_mme_freq_path(acc: int, data_root: str, fldname: str):
 @app.command()
 def get_fcst_data(year: int, month: int, acc: int, data_root: str, fldname: str):
     mon_abbr = calendar.month_abbr[month]
-    for model in MODELS:
+    for model in NMME_MODELS:
         for lstart in range(1, 8 - acc):
             lend = lstart + acc - 1
             url = get_url(model, year, mon_abbr, lstart, lend, fldname)
@@ -148,7 +152,7 @@ def process_mme_freq(
     datasets = []
     for lstart in range(1, 8 - acc):
         lend = lstart + acc - 1
-        for n, model in enumerate(MODELS):
+        for n, model in enumerate(NMME_MODELS):
             data_file = get_fcst_file_path(
                 year, month, lstart, lend, model, data_root, fldname
             )
@@ -197,6 +201,92 @@ def add_months(year: int, month: int, months_to_add: int) -> int:
 @app.command()
 def mme_freq_path(acc: int, data_root: str, fldname: str):
     print(get_mme_freq_path(acc, data_root, fldname))
+
+
+class C3S:
+    MODELS = {
+        "dwd": {"system": "21", "time_name": "forecast_reference_time"},
+        "meteo_france": {"system": "8", "time_name": "forecast_reference_time"},
+        "cmcc": {"system": "35", "time_name": "forecast_reference_time"},
+        "ukmo": {"system": "603", "time_name": "indexing_time"},
+        "ecmwf": {"system": "51", "time_name": "forecast_reference_time"},
+    }
+    PREFIX = "C3S"
+    AREA = [40, 10, 0, 70]
+
+    def download_hist(
+        self,
+        start_year: int,
+        end_year: int,
+        data_root: str,
+        grid_file: str,
+    ):
+        client = cdsapi.Client()
+        cdo = Cdo()
+        for model, info in self.MODELS.items():
+            for month in map(str, list(range(1, 13))):
+                for leadtime_month in map(str, list(range(2, 7))):
+                    system = info["system"]
+                    time_name = info["time_name"]
+                    target = (
+                        Path(data_root)
+                        / self.PREFIX
+                        / "hist"
+                        / f"{model}_{month}_{leadtime_month}.nc"
+                    )
+                    if os.path.exists(target):
+                        continue
+                    dataset = "seasonal-monthly-single-levels"
+                    request = {
+                        "originating_centre": model,
+                        "system": system,
+                        "variable": ["total_precipitation"],
+                        "product_type": ["monthly_mean"],
+                        "year": list(map(str, list(range(start_year, end_year + 1)))),
+                        "month": [month],
+                        "leadtime_month": [leadtime_month],
+                        "data_format": "netcdf",
+                        "area": [40, 10, 0, 70],
+                    }
+                    Path(target).parent.mkdir(parents=True, exist_ok=True)
+                    temp_file = f"{target}.download"
+                    temp_file1 = f"{target}.1"
+                    temp_file2 = f"{target}.2"
+                    temp_file3 = f"{target}.3"
+
+                    if not os.path.exists(temp_file):
+                        client.retrieve(dataset, request, temp_file)
+
+                    cmd = [
+                        "ncwa",
+                        "-a",
+                        "forecastMonth",
+                        temp_file,
+                        temp_file1,
+                    ]
+                    if not os.path.exists(temp_file1):
+                        subprocess.run(cmd, check=True)
+
+                    cmd = [
+                        "ncpdq",
+                        "-a",
+                        f"{time_name},number,latitude,longitude",
+                        temp_file1,
+                        temp_file2,
+                    ]
+                    if not os.path.exists(temp_file2):
+                        subprocess.run(cmd, check=True)
+
+                    cdo.remapcon(grid_file, input=temp_file2, output=temp_file3)
+                    shutil.move(temp_file3, target)
+                    os.remove(temp_file)
+                    os.remove(temp_file1)
+                    os.remove(temp_file2)
+
+
+@app.command()
+def process_c3s_hist(start_year: int, end_year: int, data_root: str, grid_file: str):
+    C3S().download_hist(start_year, end_year, data_root, grid_file)
 
 
 if __name__ == "__main__":

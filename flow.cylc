@@ -19,11 +19,11 @@
 
     [[graph]]
         R1 = """
-            install_pkgs
+            install_pkgs => process_c3s_hist
         """
 
         P1M = """
-            @wall_clock & install_pkgs[^] => get_fcst<fld><amon> => process_freq<fld><amon> => create_param => push_data
+            @wall_clock & install_pkgs[^] & process_c3s_hist[^] => get_fcst<fld><amon> => process_freq<fld><amon> => create_param => push_data
         """
 
 [runtime]
@@ -36,7 +36,7 @@
         [[[environment]]]
             ETC_DIR=${CYLC_WORKFLOW_RUN_DIR}/etc
             PYTHON={{CONDA_PREFIX_PATH}}/bin/python
-
+            PATH={{CONDA_PREFIX_PATH}}/bin:$PATH
             year=${CYLC_TASK_CYCLE_POINT:0:4}
             month=${CYLC_TASK_CYCLE_POINT:4:2}
 
@@ -72,6 +72,11 @@
             $PYTHON -c 'import seasS; seasS.app()' process-mme-freq ${year} ${month} ${CYLC_TASK_PARAM_amon} {{DATA_ROOT}} $CYLC_TASK_PARAM_fld
         """ 
         inherit = PROCESS_FREQ
+
+    [[process_c3s_hist]]
+        script = """
+            $PYTHON -c 'import seasS; seasS.app()' process-c3s-hist 1993 2016 {{DATA_ROOT}} $ETC_DIR/grid.des
+        """ 
     
     [[push_data]] 
         script = """
