@@ -23,12 +23,13 @@
         """
 
         P1M = """
-            @wall_clock & install_pkgs[^] & process_c3s_hist[^] => get_fcst<fld><amon> => process_freq<fld><amon> => create_param => push_data
+            @wall_clock & install_pkgs[^] => get_fcst<fld><amon> => process_freq<fld><amon> => create_param => push_data
+            @wall_clock & install_pkgs[^] & process_c3s_hist[^] => process_c3s_fcst => create_param => push_data
         """
 
 [runtime]
     [[root]]
-        execution retry delays = 2*PT2M
+        execution retry delays = 5*P1D
         [[[mail]]]
             to = {{ ADMIN_EMAILS }}
         [[[events]]]
@@ -75,8 +76,15 @@
 
     [[process_c3s_hist]]
         script = """
-            $PYTHON -c 'import seasS; seasS.app()' process-c3s-hist 1993 2016 {{DATA_ROOT}} $ETC_DIR/grid.des
-        """ 
+            $PYTHON -c 'import seasS; seasS.app()' process-c3s-hist prec 1993 2016 {{DATA_ROOT}} $ETC_DIR/grid.des
+            $PYTHON -c 'import seasS; seasS.app()' process-c3s-hist tref 1993 2016 {{DATA_ROOT}} $ETC_DIR/grid.des
+        """
+
+    [[process_c3s_fcst]] 
+        script = """
+            $PYTHON -c 'import seasS; seasS.app()' process-c3s-fcst prec ${year} ${month} {{DATA_ROOT}} $ETC_DIR/grid.des
+            $PYTHON -c 'import seasS; seasS.app()' process-c3s-fcst tref ${year} ${month} {{DATA_ROOT}} $ETC_DIR/grid.des
+        """
     
     [[push_data]] 
         script = """

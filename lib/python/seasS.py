@@ -16,12 +16,16 @@ from dateutil.relativedelta import relativedelta
 
 app = typer.Typer()
 
+cdo = Cdo()
+
+cds_client = cdsapi.Client()
+
 NMME_MODELS = [
     "CanSIPS-IC4",
     "COLA-RSMAS-CESM1",
     "GFDL-SPEAR",
     "NCEP-CFSv2",
-    "NASA-GEOSS2S",
+    #    "NASA-GEOSS2S",
 ]
 
 
@@ -84,8 +88,11 @@ def compute_frequencies(data_file, hist_pctl_data, fldname):
             fvar.values = var.values < pvar.values
         else:
             fvar.values = var.values > pvar.values
+        if "M" in fvar.dims:
+            fvar = fvar.sum(dim="M")
+        else:
+            fvar = fvar.sum(dim="number")
 
-        fvar = fvar.sum(dim="M")
         fvar.name = fname
         if fname == "f33":
             f33 = fvar
@@ -205,88 +212,299 @@ def mme_freq_path(acc: int, data_root: str, fldname: str):
 
 class C3S:
     MODELS = {
-        "dwd": {"system": "21", "time_name": "forecast_reference_time"},
-        "meteo_france": {"system": "8", "time_name": "forecast_reference_time"},
-        "cmcc": {"system": "35", "time_name": "forecast_reference_time"},
-        "ukmo": {"system": "603", "time_name": "indexing_time"},
-        "ecmwf": {"system": "51", "time_name": "forecast_reference_time"},
+        "dwd": {
+            "system": "21",
+            "time_name": "forecast_reference_time",
+            "prec_name": "tprate",
+        },
+        "meteo_france": {
+            "system": "8",
+            "time_name": "forecast_reference_time",
+            "prec_name": "tprate",
+        },
+        "cmcc": {
+            "system": "35",
+            "time_name": "forecast_reference_time",
+            "prec_name": "tprate",
+        },
+        "ukmo": {
+            "system": "603",
+            "time_name": "indexing_time",
+            "prec_name": "tprate",
+        },
+        "ecmwf": {
+            "system": "51",
+            "time_name": "forecast_reference_time",
+            "prec_name": "tprate",
+        },
+    }
+    FIELD_NAMES = {
+        "prec": "total_precipitation",
+        "tref": "2m_temperature",
     }
     PREFIX = "C3S"
     AREA = [40, 10, 0, 70]
+    RANGES = ((1, 3), (1, 4), (1, 5), (2, 4), (2, 5), (3, 5))
+
+    def get_hist_pctl_path(
+        self,
+        model: str,
+        month: int,
+        lstart: int,
+        lend: int,
+        data_root: str,
+        fldname: str,
+    ):
+        return (
+            f"{data_root}/{self.PREFIX}/{fldname}"
+            + f"/hist/{model}/percentiles/{month:02d}/"
+            + f"L-{lstart}.5-{lend}.5/{model}-{fldname}-{month:02d}-L-{lstart}.5-{lend}.5_percentiles.nc"
+        )
+
+    def get_fcst_freq_path(self, accum_mon: int, data_root: str, fldname: str):
+        return f"{data_root}/{fldname}/live/{fldname}-{self.PREFIX}-{accum_mon}monthly-frequencies.nc"
+
+    def _compute_percentiles(self, in_file, fldname):
+        ds = xr.open_dataset(in_file)
+        da = ds[fldname]
+
+        if len(da.shape) != 4:
+            raise ValueError("Data array should be 4 dimensional")
+        nt, ne, ny, nx = da.shape
+        array = da.values.reshape(nt * ne, ny, nx)
+        da_p33 = da[0, 0, :, :]
+        da_p66 = da[0, 0, :, :]
+        da_p33.values = np.nanpercentile(array, 33.3, 0)
+        da_p66.values = np.nanpercentile(array, 66.6, 0)
+        da_p33.name = "p33"
+        da_p66.name = "p66"
+        ds = xr.Dataset({da_p33.name: da_p33, da_p66.name: da_p66})
+        return ds
+
+    def compute_percentiles(self, field_name, data_root):
+        for lstart, lend in self.RANGES:
+            for model, info in self.MODELS.items():
+                for month in range(1, 13):
+                    out_path = self.get_hist_pctl_path(
+                        model, month, lstart, lend, data_root, field_name
+                    )
+                    print(f"Creating... {out_path}")
+                    file_list = ""
+                    for ll in range(lstart, lend + 1):
+                        file_list = (
+                            file_list
+                            + " "
+                            + self._get_hist_file_path(
+                                field_name, data_root, model, month, ll + 1
+                            )
+                        )
+                    temp_file = cdo.ensmean(input=file_list)
+                    pctl_ds = self._compute_percentiles(
+                        temp_file, info[f"{field_name}_name"]
+                    )
+                    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+                    pctl_ds.to_netcdf(out_path)
+
+    def process_fcst(
+        self,
+        field_name: str,
+        year: int,
+        month: int,
+        data_root: str,
+        grid_file: str,
+    ):
+        for leadtime_month in map(str, list(range(2, 7))):
+            self._download_preproc(
+                field_name,
+                year,
+                year,
+                grid_file,
+                month,
+                leadtime_month,
+                data_root,
+                hist=False,
+            )
+        datasets = {}
+        for lstart, lend in self.RANGES:
+            for n, (model, info) in enumerate(self.MODELS.items()):
+                file_list = ""
+                for ll in range(lstart, lend + 1):
+                    file_list = (
+                        file_list
+                        + " "
+                        + self._get_fcst_file_path(
+                            field_name, data_root, model, year, month, ll + 1
+                        )
+                    )
+                temp_file = cdo.ensmean(input=file_list)
+                hist_pctl_file = self.get_hist_pctl_path(
+                    model, month, lstart, lend, data_root, field_name
+                )
+                fldname = info[f"{field_name}_name"]
+                if n == 0:
+                    ne, fr = compute_frequencies(temp_file, hist_pctl_file, fldname)
+                else:
+                    nne, ffr = compute_frequencies(temp_file, hist_pctl_file, fldname)
+                    ne += nne
+                    for i in range(len(fr)):
+                        fr[i].values += ffr[i].values
+
+            for i in range(len(fr)):
+                fr[i].values = fr[i].values / float(ne)
+            accum_mon = lend - lstart + 1
+            tstart = add_months(year, month, lstart)
+            tend = add_months(year, month, lend)
+            dataset = xr.Dataset({da.name: da for da in fr})
+            dataset["tstart"] = (("S"), [tstart])
+            dataset["tend"] = (("S"), [tend])
+            if accum_mon in datasets:
+                datasets[accum_mon].append(dataset)
+            else:
+                datasets[accum_mon] = [dataset]
+
+        for accum_mon, dsets in datasets.items():
+            dataset = xr.concat(dsets, dim="S")
+            dataset = dataset.rename({"S": "time", "X": "lon", "Y": "lat"})
+            ntime = len(dsets)
+            ym = str(dataset["tstart"][0].values)
+            dates = pd.date_range(
+                start=f"{ym[0:4]}-{ym[4:6]}-01", periods=ntime, freq="MS"
+            )
+            ref_time = pd.Timestamp("1960-01-01")
+            time_units = (dates - ref_time).days
+            dataset.coords["time"] = ("time", time_units)
+            dataset.coords["time"].attrs["units"] = "days since 1960-01-01"
+            dataset.coords["time"].attrs["calendar"] = "gregorian"
+            data_root1 = f"{data_root}/mme/freq/{year}/{month:02d}"
+            output = self.get_fcst_freq_path(accum_mon, data_root1, field_name)
+            Path(output).parent.mkdir(parents=True, exist_ok=True)
+            dataset.to_netcdf(output, unlimited_dims=["time"])
+            print(f"created... {output}")
 
     def download_hist(
         self,
+        field_name: str,
         start_year: int,
         end_year: int,
         data_root: str,
         grid_file: str,
     ):
-        client = cdsapi.Client()
-        cdo = Cdo()
+        for month in map(str, list(range(1, 13))):
+            for leadtime_month in map(str, list(range(2, 7))):
+                self._download_preproc(
+                    field_name,
+                    start_year,
+                    end_year,
+                    grid_file,
+                    month,
+                    leadtime_month,
+                    data_root,
+                    hist=True,
+                )
+
+    def _download_preproc(
+        self,
+        field_name,
+        start_year,
+        end_year,
+        grid_file,
+        month,
+        leadtime_month,
+        data_root,
+        hist,
+    ):
+
+        dataset = "seasonal-monthly-single-levels"
         for model, info in self.MODELS.items():
-            for month in map(str, list(range(1, 13))):
-                for leadtime_month in map(str, list(range(2, 7))):
-                    system = info["system"]
-                    time_name = info["time_name"]
-                    target = (
-                        Path(data_root)
-                        / self.PREFIX
-                        / "hist"
-                        / f"{model}_{month}_{leadtime_month}.nc"
-                    )
-                    if os.path.exists(target):
-                        continue
-                    dataset = "seasonal-monthly-single-levels"
-                    request = {
-                        "originating_centre": model,
-                        "system": system,
-                        "variable": ["total_precipitation"],
-                        "product_type": ["monthly_mean"],
-                        "year": list(map(str, list(range(start_year, end_year + 1)))),
-                        "month": [month],
-                        "leadtime_month": [leadtime_month],
-                        "data_format": "netcdf",
-                        "area": [40, 10, 0, 70],
-                    }
-                    Path(target).parent.mkdir(parents=True, exist_ok=True)
-                    temp_file = f"{target}.download"
-                    temp_file1 = f"{target}.1"
-                    temp_file2 = f"{target}.2"
-                    temp_file3 = f"{target}.3"
+            if hist:
+                target = self._get_hist_file_path(
+                    field_name, data_root, model, month, leadtime_month
+                )
+            else:
+                target = self._get_fcst_file_path(
+                    field_name, data_root, model, start_year, month, leadtime_month
+                )
+            print(f"downloading and processing.... {target}")
+            if os.path.exists(target):
+                continue
+            system = info["system"]
+            time_name = info["time_name"]
+            request = {
+                "originating_centre": model,
+                "system": system,
+                "variable": [self.FIELD_NAMES[field_name]],
+                "product_type": ["monthly_mean"],
+                "year": list(map(str, list(range(start_year, end_year + 1)))),
+                "month": [month],
+                "leadtime_month": [leadtime_month],
+                "data_format": "netcdf",
+                "area": self.AREA,
+            }
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            temp_file = f"{target}.download"
+            temp_file1 = f"{target}.1"
+            temp_file2 = f"{target}.2"
+            temp_file3 = f"{target}.3"
 
-                    if not os.path.exists(temp_file):
-                        client.retrieve(dataset, request, temp_file)
+            if not os.path.exists(temp_file):
+                cds_client.retrieve(dataset, request, temp_file)
 
-                    cmd = [
-                        "ncwa",
-                        "-a",
-                        "forecastMonth",
-                        temp_file,
-                        temp_file1,
-                    ]
-                    if not os.path.exists(temp_file1):
-                        subprocess.run(cmd, check=True)
+            cmd = [
+                "ncwa",
+                "-a",
+                "forecastMonth",
+                temp_file,
+                temp_file1,
+            ]
+            if not os.path.exists(temp_file1):
+                subprocess.run(cmd, check=True)
 
-                    cmd = [
-                        "ncpdq",
-                        "-a",
-                        f"{time_name},number,latitude,longitude",
-                        temp_file1,
-                        temp_file2,
-                    ]
-                    if not os.path.exists(temp_file2):
-                        subprocess.run(cmd, check=True)
+            cmd = [
+                "ncpdq",
+                "-a",
+                f"{time_name},number,latitude,longitude",
+                temp_file1,
+                temp_file2,
+            ]
+            if not os.path.exists(temp_file2):
+                subprocess.run(cmd, check=True)
 
-                    cdo.remapcon(grid_file, input=temp_file2, output=temp_file3)
-                    shutil.move(temp_file3, target)
-                    os.remove(temp_file)
-                    os.remove(temp_file1)
-                    os.remove(temp_file2)
+            cdo.remapcon(grid_file, input=temp_file2, output=temp_file3)
+            shutil.move(temp_file3, target)
+            os.remove(temp_file)
+            os.remove(temp_file1)
+            os.remove(temp_file2)
+
+    def _get_hist_file_path(self, field_name, data_root, model, month, leadtime_month):
+        return f"{data_root}/{self.PREFIX}/hist/{field_name}/{model}_{month}_{leadtime_month}.nc"
+
+    def _get_fcst_file_path(
+        self, field_name, data_root, model, year, month, leadtime_month
+    ):
+        return f"{data_root}/{self.PREFIX}/{field_name}/fcst/{year}/{model}_{field_name}_{year}_{month}_{leadtime_month}.nc"
 
 
 @app.command()
-def process_c3s_hist(start_year: int, end_year: int, data_root: str, grid_file: str):
-    C3S().download_hist(start_year, end_year, data_root, grid_file)
+def process_c3s_hist(
+    field_name: str,
+    start_year: int,
+    end_year: int,
+    data_root: str,
+    grid_file: str,
+):
+    C3S().download_hist(field_name, start_year, end_year, data_root, grid_file)
+    C3S().compute_percentiles(field_name, data_root)
+
+
+@app.command()
+def process_c3s_fcst(
+    field_name: str,
+    year: int,
+    month: int,
+    data_root: str,
+    grid_file: str,
+):
+    C3S().process_fcst(field_name, year, month, data_root, grid_file)
 
 
 if __name__ == "__main__":
