@@ -11,7 +11,7 @@
     amon = 3..6
 
 [scheduling]
-    initial cycle point = 2025-03-02T00:00:00
+    initial cycle point = 2025-06-02T00:00:00
     [[queues]]
         [[[get_fcst_queue]]]
             limit=2
@@ -19,17 +19,20 @@
 
     [[graph]]
         R1 = """
+            install_pkgs 
             install_pkgs => process_c3s_hist
         """
 
         P1M = """
-            @wall_clock & install_pkgs[^] => get_fcst<fld><amon> => process_freq<fld><amon> => create_param => push_data
-            @wall_clock & install_pkgs[^] & process_c3s_hist[^] => process_c3s_fcst => create_param => push_data
+            @wall_clock & install_pkgs[^] & process_c3s_hist[^] => download_nmme_fcst<fld><amon> => download_c3s_fcst => process_fcst => create_param => push_data
+            @wall_clock => download_nmme_fcst<fld><amon> => process_fcst 
+            @wall_clock & install_pkgs[^] => download_c3s_fcst => process_fcst
+            process_fcst => create_param => push_data
         """
 
 [runtime]
     [[root]]
-        execution retry delays = 5*P1D
+        execution retry delays = 10*P1D
         [[[mail]]]
             to = {{ ADMIN_EMAILS }}
         [[[events]]]
@@ -40,9 +43,6 @@
             PATH={{CONDA_PREFIX_PATH}}/bin:$PATH
             year=${CYLC_TASK_CYCLE_POINT:0:4}
             month=${CYLC_TASK_CYCLE_POINT:4:2}
-
-
-
 
     [[install_pkgs]]
         script = """
@@ -62,17 +62,11 @@
 
     [[PUSH_DATA]]
 
-    [[get_fcst<fld><amon>]]
+    [[download_nmme_fcst<fld><amon>]]
         script = """
             $PYTHON -c 'import seasS; seasS.app()' get-fcst-data ${year} ${month} ${CYLC_TASK_PARAM_amon} {{DATA_ROOT}} $CYLC_TASK_PARAM_fld
         """
         inherit = GET_FCST
-    
-    [[process_freq<fld><amon>]] 
-        script = """
-            $PYTHON -c 'import seasS; seasS.app()' process-mme-freq ${year} ${month} ${CYLC_TASK_PARAM_amon} {{DATA_ROOT}} $CYLC_TASK_PARAM_fld
-        """ 
-        inherit = PROCESS_FREQ
 
     [[process_c3s_hist]]
         script = """
@@ -80,18 +74,24 @@
             $PYTHON -c 'import seasS; seasS.app()' process-c3s-hist tref 1993 2016 {{DATA_ROOT}} $ETC_DIR/grid.des
         """
 
-    [[process_c3s_fcst]] 
+    [[download_c3s_fcst]]
         script = """
-            $PYTHON -c 'import seasS; seasS.app()' process-c3s-fcst prec ${year} ${month} {{DATA_ROOT}} $ETC_DIR/grid.des
-            $PYTHON -c 'import seasS; seasS.app()' process-c3s-fcst tref ${year} ${month} {{DATA_ROOT}} $ETC_DIR/grid.des
+            $PYTHON -c 'import seasS; seasS.app()' download-c3s-fcst prec ${year} ${month} {{DATA_ROOT}} $ETC_DIR/grid.des
+            $PYTHON -c 'import seasS; seasS.app()' download-c3s-fcst tref ${year} ${month} {{DATA_ROOT}} $ETC_DIR/grid.des
         """
-    
-    [[push_data]] 
+
+    [[process_fcst]]
+        script = """
+            $PYTHON -c 'import seasS; seasS.app()' process-fcst prec ${year} ${month} {{DATA_ROOT}} 
+            $PYTHON -c 'import seasS; seasS.app()' process-fcst tref ${year} ${month} {{DATA_ROOT}} 
+        """
+
+    [[push_data]]
         script = """
             cd {{DATA_ROOT}}/mme/freq/${year}/${month}
             echo push data to {{VIZ_SERVER_PATH}}
             rsync -a -P * {{VIZ_SERVER_PATH}}
         """
         inherit = PUSH_DATA
-        [[[events]]] 
+        [[[events]]]
             mail events = succeeded
